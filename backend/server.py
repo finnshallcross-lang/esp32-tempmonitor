@@ -43,7 +43,7 @@ async def mock_sensor():
     return SensorReading(
         temperature=round(random.uniform(20.0, 28.0), 1),
         humidity=round(random.uniform(35.0, 65.0), 1),
-        brightness=round(random.uniform(120.0, 850.0), 0),
+        brightness=round(random.uniform(20.0, 90.0), 0),
     )
 
 

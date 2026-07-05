@@ -8,7 +8,7 @@ export const CONFIG_KEYS = {
   demo: "esp32.demo",
 } as const;
 
-export const DEFAULT_ENDPOINT = "http://192.168.68.71";
+export const DEFAULT_ENDPOINT = "http://192.168.68.71/data";
 export const DEFAULT_INTERVAL_MS = 5000;
 export const REFRESH_INTERVALS = [
   { label: "2s", ms: 2000 },
@@ -106,6 +106,45 @@ export async function fetchSensor(
       throw new Error("Invalid JSON from ESP32");
     }
     return normalizeReading(json);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// Derive the "control" base URL from the read endpoint. If the read URL is
+// `http://host/data` we send commands to `http://host` (the ESP32 exposes
+// `/brightness` at the root).
+function deriveBaseUrl(readUrl: string): string {
+  const trimmed = readUrl.trim().replace(/\/+$/, "");
+  const lastSlash = trimmed.lastIndexOf("/");
+  const protoEnd = trimmed.indexOf("://");
+  if (lastSlash > protoEnd + 2) {
+    return trimmed.slice(0, lastSlash);
+  }
+  return trimmed;
+}
+
+export async function setBrightness(
+  cfg: SensorConfig,
+  percent: number,
+  timeoutMs = 3000,
+): Promise<void> {
+  // Demo mode: brightness writes are no-op (the mock endpoint is read-only).
+  if (cfg.demo) return;
+
+  const pct = Math.max(0, Math.min(100, Math.round(percent)));
+  const base = deriveBaseUrl(cfg.endpoint);
+  const url = `${base}/brightness?value=${pct}`;
+
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
   } finally {
     clearTimeout(t);
   }

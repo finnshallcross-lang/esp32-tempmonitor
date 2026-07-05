@@ -1,4 +1,5 @@
 import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+import Slider from "@react-native-community/slider";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import * as Haptics from "expo-haptics";
@@ -23,6 +24,7 @@ import {
   fetchSensor,
   loadConfig,
   resolveFetchUrl,
+  setBrightness,
 } from "@/src/lib/sensor";
 
 const C = {
@@ -74,14 +76,27 @@ export default function Dashboard() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [refreshing, setRefreshing] = useState(false);
+  const [sliderValue, setSliderValue] = useState<number>(0);
+  const [sliderActive, setSliderActive] = useState(false);
+  const [brightnessError, setBrightnessError] = useState<string>("");
   const configRef = useRef<SensorConfig>(config);
   configRef.current = config;
+  const sliderActiveRef = useRef(false);
+  sliderActiveRef.current = sliderActive;
+  const brightnessWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   const doFetch = useCallback(async (silent = false) => {
     if (!silent) setStatus("loading");
     try {
       const data = await fetchSensor(configRef.current);
       setReading(data);
+      // Keep the slider in sync with the device unless the user is actively
+      // dragging (avoids fighting the user for control).
+      if (!sliderActiveRef.current && data.brightness !== null) {
+        setSliderValue(data.brightness);
+      }
       setLastUpdated(new Date());
       setStatus("connected");
       setErrorMsg("");
@@ -126,6 +141,55 @@ export default function Dashboard() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     router.push("/settings");
   }, [router]);
+
+  // Debounced write while the user is dragging + a final write on release.
+  const writeBrightness = useCallback(
+    async (pct: number, opts?: { immediate?: boolean }) => {
+      const send = async () => {
+        try {
+          await setBrightness(configRef.current, pct);
+          setBrightnessError("");
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : "Failed";
+          setBrightnessError(msg);
+        }
+      };
+      if (brightnessWriteTimer.current) {
+        clearTimeout(brightnessWriteTimer.current);
+        brightnessWriteTimer.current = null;
+      }
+      if (opts?.immediate) {
+        await send();
+      } else {
+        brightnessWriteTimer.current = setTimeout(send, 250);
+      }
+    },
+    [],
+  );
+
+  const onSliderChange = useCallback(
+    (v: number) => {
+      const rounded = Math.round(v);
+      setSliderValue(rounded);
+      writeBrightness(rounded);
+    },
+    [writeBrightness],
+  );
+
+  const onSliderStart = useCallback(() => {
+    setSliderActive(true);
+  }, []);
+
+  const onSliderComplete = useCallback(
+    (v: number) => {
+      const rounded = Math.round(v);
+      setSliderValue(rounded);
+      setSliderActive(false);
+      Haptics.selectionAsync();
+      writeBrightness(rounded, { immediate: true });
+    },
+    [writeBrightness],
+  );
 
   const statusColor =
     status === "connected"
@@ -264,8 +328,56 @@ export default function Dashboard() {
           iconName="brightness-6"
           label="Screen Brightness"
           value={formatValue(reading.brightness, 0)}
-          unit="lux"
+          unit="%"
         />
+
+        {/* Brightness control */}
+        <View style={styles.controlCard} testID="brightness-control-card">
+          <View style={styles.controlHeader}>
+            <View style={styles.metricIconWrap}>
+              <MaterialCommunityIcons
+                name="tune-vertical"
+                size={22}
+                color={C.brand}
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.metricLabel}>SET BRIGHTNESS</Text>
+              <Text style={styles.controlValue} testID="brightness-slider-value">
+                {sliderValue}%
+              </Text>
+            </View>
+          </View>
+          <Slider
+            testID="brightness-slider"
+            style={styles.slider}
+            minimumValue={0}
+            maximumValue={100}
+            step={1}
+            value={sliderValue}
+            minimumTrackTintColor={C.brand}
+            maximumTrackTintColor={C.surfaceTertiary}
+            thumbTintColor={C.brand}
+            disabled={config.demo || status === "error"}
+            onValueChange={onSliderChange}
+            onSlidingStart={onSliderStart}
+            onSlidingComplete={onSliderComplete}
+          />
+          <View style={styles.controlFootRow}>
+            <Text style={styles.controlHint}>0%</Text>
+            <Text style={styles.controlHint}>100%</Text>
+          </View>
+          {brightnessError ? (
+            <Text style={styles.controlError} testID="brightness-error">
+              Couldn&apos;t set brightness: {brightnessError}
+            </Text>
+          ) : null}
+          {config.demo ? (
+            <Text style={styles.controlHint}>
+              Disabled in demo mode.
+            </Text>
+          ) : null}
+        </View>
 
         <Text style={styles.footnote} testID="footnote">
           The ESP32 must be reachable on the same Wi-Fi as this device. Time
@@ -481,4 +593,46 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   fabText: { color: "#FFFFFF", fontWeight: "600", fontSize: 14 },
+  controlCard: {
+    backgroundColor: C.surfaceSecondary,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+  },
+  controlHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    marginBottom: 6,
+  },
+  controlValue: {
+    color: C.onSurface,
+    fontSize: 24,
+    fontWeight: "500",
+    letterSpacing: 0.5,
+    marginTop: 2,
+  },
+  slider: {
+    width: "100%",
+    height: 40,
+    marginTop: 4,
+  },
+  controlFootRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: 2,
+    marginTop: -4,
+  },
+  controlHint: {
+    color: C.onSurfaceTertiary,
+    fontSize: 11,
+    letterSpacing: 0.4,
+  },
+  controlError: {
+    color: C.error,
+    fontSize: 12,
+    marginTop: 8,
+  },
 });
