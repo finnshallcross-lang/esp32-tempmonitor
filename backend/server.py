@@ -4,55 +4,49 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import random
 from pathlib import Path
-from pydantic import BaseModel, Field
-from typing import List
-import uuid
-from datetime import datetime
+from pydantic import BaseModel
 
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
+# MongoDB connection (kept for platform compatibility; unused in this app).
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Create the main app without a prefix
 app = FastAPI()
-
-# Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+class SensorReading(BaseModel):
+    temperature: float
+    humidity: float
+    brightness: float
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "ESP32 Sensor Dash backend up"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.dict()
-    status_obj = StatusCheck(**status_dict)
-    _ = await db.status_checks.insert_one(status_obj.dict())
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find().to_list(1000)
-    return [StatusCheck(**status_check) for status_check in status_checks]
+@api_router.get("/mock-sensor", response_model=SensorReading)
+async def mock_sensor():
+    """Demo endpoint that mimics an ESP32 sensor payload.
 
-# Include the router in the main app
+    Useful for testing the UI when the phone is not on the same LAN as the
+    ESP32. Values fluctuate a bit each call so the dashboard looks alive.
+    NOTE: no timestamp field – the app derives 'Last updated' locally.
+    """
+    return SensorReading(
+        temperature=round(random.uniform(20.0, 28.0), 1),
+        humidity=round(random.uniform(35.0, 65.0), 1),
+        brightness=round(random.uniform(120.0, 850.0), 0),
+    )
+
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -63,12 +57,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
