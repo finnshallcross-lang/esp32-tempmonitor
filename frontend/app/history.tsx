@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import Slider from "@react-native-community/slider";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Pressable,
@@ -11,6 +11,11 @@ import {
   Text,
   View,
 } from "react-native";
+import {
+  Gesture,
+  GestureDetector,
+} from "react-native-gesture-handler";
+import { runOnJS } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Line, Path, Text as SvgText } from "react-native-svg";
 
@@ -58,30 +63,49 @@ const PAD_B = 28;
 const PLOT_W = CHART_W - PAD_L - PAD_R;
 const PLOT_H = CHART_H - PAD_T - PAD_B;
 
-function fmtRangeLabel(days: number) {
-  if (days === 1) return "24 hours";
-  return `${days} days`;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MIN_SPAN_MS = 5 * 60 * 1000;     // don't zoom tighter than 5 min
+const MAX_SPAN_MS = 30 * DAY_MS;        // full retention window
+
+// Downsample large point arrays so the SVG stays responsive. Picks every Nth
+// point when the visible window contains more than `targetPoints` samples.
+function downsample(
+  points: HistoryPoint[],
+  targetPoints: number,
+): HistoryPoint[] {
+  if (points.length <= targetPoints) return points;
+  const step = Math.ceil(points.length / targetPoints);
+  const out: HistoryPoint[] = [];
+  for (let i = 0; i < points.length; i += step) out.push(points[i]);
+  // Always include the newest point so the right edge is accurate.
+  const last = points[points.length - 1];
+  if (out[out.length - 1] !== last) out.push(last);
+  return out;
 }
 
 function pointsToPath(
   points: HistoryPoint[],
   key: MetricKey,
-  now: number,
-  rangeMs: number,
+  viewStart: number,
+  viewEnd: number,
   yMin: number,
   yMax: number,
 ): string {
-  const xStart = now - rangeMs;
+  const rangeMs = viewEnd - viewStart;
   const span = Math.max(1, yMax - yMin);
   let d = "";
   let started = false;
   for (const p of points) {
+    if (p.ts < viewStart || p.ts > viewEnd) {
+      started = false;
+      continue;
+    }
     const v = p[key];
     if (v === null || v === undefined) {
       started = false;
       continue;
     }
-    const nx = (p.ts - xStart) / rangeMs;
+    const nx = (p.ts - viewStart) / rangeMs;
     const ny = (v - yMin) / span;
     const x = PAD_L + nx * PLOT_W;
     const y = PAD_T + (1 - ny) * PLOT_H;
@@ -91,10 +115,15 @@ function pointsToPath(
   return d;
 }
 
-function computeBounds(points: HistoryPoint[]): { min: number; max: number } {
+function computeBounds(
+  points: HistoryPoint[],
+  viewStart: number,
+  viewEnd: number,
+): { min: number; max: number } {
   let min = Infinity;
   let max = -Infinity;
   for (const p of points) {
+    if (p.ts < viewStart || p.ts > viewEnd) continue;
     for (const m of METRICS) {
       const v = p[m.key];
       if (v === null || v === undefined) continue;
@@ -109,15 +138,31 @@ function computeBounds(points: HistoryPoint[]): { min: number; max: number } {
   return { min: Math.floor(min - pad), max: Math.ceil(max + pad) };
 }
 
-function formatTick(ts: number, rangeDays: number): string {
+function formatTick(ts: number, spanMs: number): string {
   const d = new Date(ts);
-  if (rangeDays <= 1) {
+  if (spanMs <= 2 * DAY_MS) {
     return `${d.getHours().toString().padStart(2, "0")}:${d
       .getMinutes()
       .toString()
       .padStart(2, "0")}`;
   }
   return `${d.getDate()}/${d.getMonth() + 1}`;
+}
+
+function formatSpan(ms: number): string {
+  if (ms < 60 * 60 * 1000) {
+    return `${Math.round(ms / 60000)} min`;
+  }
+  if (ms < 2 * DAY_MS) {
+    const hours = ms / (60 * 60 * 1000);
+    return hours >= 10
+      ? `${Math.round(hours)} hr`
+      : `${hours.toFixed(1)} hr`;
+  }
+  const days = ms / DAY_MS;
+  return Math.abs(days - Math.round(days)) < 0.05
+    ? `${Math.round(days)} days`
+    : `${days.toFixed(1)} days`;
 }
 
 export default function History() {
@@ -131,6 +176,12 @@ export default function History() {
     DEFAULT_SAMPLE_INTERVAL_MS,
   );
 
+  // Zoom / pan state — controls the visible window on top of the underlying
+  // slider-selected range. viewSpan is the width in ms, viewCenter is the
+  // midpoint. Both get reset whenever the user moves the slider.
+  const [viewSpan, setViewSpan] = useState<number>(7 * DAY_MS);
+  const [viewCenter, setViewCenter] = useState<number>(Date.now());
+
   useEffect(() => {
     loadConfig().then((cfg) => setSampleIntervalMs(cfg.sampleIntervalMs));
   }, []);
@@ -141,7 +192,12 @@ export default function History() {
       const p = await getHistory(days);
       if (!cancelled) {
         setPoints(p);
-        setNow(Date.now());
+        const newNow = Date.now();
+        setNow(newNow);
+        // Reset zoom to the full slider range whenever days changes.
+        const span = days * DAY_MS;
+        setViewSpan(span);
+        setViewCenter(newNow - span / 2);
       }
     })();
     return () => {
@@ -149,8 +205,6 @@ export default function History() {
     };
   }, [days]);
 
-  // Refresh every minute so the chart's "right edge" (now) advances smoothly
-  // and any newly recorded points appear without user action.
   useEffect(() => {
     const id = setInterval(async () => {
       const p = await getHistory(days);
@@ -160,19 +214,104 @@ export default function History() {
     return () => clearInterval(id);
   }, [days]);
 
-  const bounds = useMemo(() => computeBounds(points), [points]);
-  const rangeMs = days * 24 * 60 * 60 * 1000;
+  // Zoom / pan handlers — writable from the gesture worklets via runOnJS.
+  const zoomAround = useCallback(
+    (scale: number, focalNormX: number) => {
+      setViewSpan((prev) => {
+        const next = Math.max(
+          MIN_SPAN_MS,
+          Math.min(MAX_SPAN_MS, prev / scale),
+        );
+        // Keep the focal timestamp under the finger stationary.
+        setViewCenter((prevCenter) => {
+          const prevStart = prevCenter - prev / 2;
+          const focalTs = prevStart + focalNormX * prev;
+          return focalTs + (0.5 - focalNormX) * next;
+        });
+        return next;
+      });
+    },
+    [],
+  );
+
+  const panBy = useCallback((deltaNormX: number) => {
+    setViewCenter((prev) => prev - deltaNormX * viewSpanRef.current);
+  }, []);
+
+  // Keep a ref of viewSpan so panBy computes with the latest value without
+  // becoming a stale-closure trap.
+  const viewSpanRef = useRef<number>(viewSpan);
+  useEffect(() => {
+    viewSpanRef.current = viewSpan;
+  }, [viewSpan]);
+
+  const resetZoom = useCallback(() => {
+    const span = days * DAY_MS;
+    setViewSpan(span);
+    setViewCenter(Date.now() - span / 2);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }, [days]);
+
+  // Gesture composition: pinch zooms, pan pans, double-tap resets.
+  const pinch = useMemo(
+    () =>
+      Gesture.Pinch()
+        .onUpdate((e) => {
+          // focalX is in px within the gesture container (chart card).
+          // Approximate the plot area as full width for the normalized focal.
+          const focalNormX = Math.max(0, Math.min(1, e.focalX / CHART_W));
+          runOnJS(zoomAround)(e.scaleChange ?? 1, focalNormX);
+        }),
+    [zoomAround],
+  );
+
+  const pan = useMemo(
+    () =>
+      Gesture.Pan()
+        .minPointers(1)
+        .maxPointers(1)
+        .onUpdate((e) => {
+          const deltaNormX = e.translationX / CHART_W;
+          runOnJS(panBy)(deltaNormX);
+        }),
+    [panBy],
+  );
+
+  const doubleTap = useMemo(
+    () => Gesture.Tap().numberOfTaps(2).onEnd(() => runOnJS(resetZoom)()),
+    [resetZoom],
+  );
+
+  const composed = useMemo(
+    () => Gesture.Simultaneous(pinch, pan, doubleTap),
+    [pinch, pan, doubleTap],
+  );
+
+  const viewStart = viewCenter - viewSpan / 2;
+  const viewEnd = viewCenter + viewSpan / 2;
+
+  // Downsample visible points so panning/pinching stays smooth even at 30-sec
+  // sampling. Target ~500 points on screen.
+  const visiblePoints = useMemo(() => {
+    const inRange = points.filter((p) => p.ts >= viewStart && p.ts <= viewEnd);
+    return downsample(inRange, 500);
+  }, [points, viewStart, viewEnd]);
+
+  const bounds = useMemo(
+    () => computeBounds(points, viewStart, viewEnd),
+    [points, viewStart, viewEnd],
+  );
 
   const xTicks = useMemo(() => {
     const ticks = 4;
     const arr: { x: number; ts: number }[] = [];
     for (let i = 0; i <= ticks; i++) {
-      const ts = now - rangeMs + (rangeMs * i) / ticks;
+      const ts = viewStart + (viewSpan * i) / ticks;
       const x = PAD_L + (i / ticks) * PLOT_W;
       arr.push({ x, ts });
     }
     return arr;
-  }, [now, rangeMs]);
+  }, [viewStart, viewSpan]);
 
   const yTicks = useMemo(() => {
     const ticks = 4;
@@ -215,6 +354,10 @@ export default function History() {
     );
   };
 
+  const isZoomed =
+    Math.abs(viewSpan - days * DAY_MS) > 1000 ||
+    Math.abs(viewEnd - now) > 60_000;
+
   return (
     <View
       style={[styles.root, { paddingTop: insets.top }]}
@@ -234,7 +377,7 @@ export default function History() {
         </Pressable>
         <View>
           <Text style={styles.brandTag}>HISTORY</Text>
-          <Text style={styles.title}>{fmtRangeLabel(days)}</Text>
+          <Text style={styles.title}>{formatSpan(viewSpan)}</Text>
         </View>
         <Pressable
           testID="history-clear-button"
@@ -269,110 +412,118 @@ export default function History() {
           ))}
         </View>
 
-        {/* Chart card */}
-        <View style={styles.chartCard} testID="history-chart-card">
-          <Svg
-            width="100%"
-            height={CHART_H}
-            viewBox={`0 0 ${CHART_W} ${CHART_H}`}
-            testID="history-chart-svg"
-          >
-            {/* Y grid + labels */}
-            {yTicks.map((t, i) => (
-              <Line
-                key={`yg-${i}`}
-                x1={PAD_L}
-                x2={PAD_L + PLOT_W}
-                y1={t.y}
-                y2={t.y}
-                stroke={C.surfaceTertiary}
-                strokeWidth={1}
-              />
-            ))}
-            {yTicks.map((t, i) => (
-              <SvgText
-                key={`yl-${i}`}
-                x={PAD_L - 6}
-                y={t.y + 3}
-                fontSize={9}
-                fill={C.onSurfaceTertiary}
-                textAnchor="end"
-              >
-                {Math.round(t.value)}
-              </SvgText>
-            ))}
-            {/* X labels */}
-            {xTicks.map((t, i) => (
-              <SvgText
-                key={`xl-${i}`}
-                x={t.x}
-                y={CHART_H - 8}
-                fontSize={9}
-                fill={C.onSurfaceTertiary}
-                textAnchor="middle"
-              >
-                {formatTick(t.ts, days)}
-              </SvgText>
-            ))}
-            {/* Lines */}
-            {METRICS.map((m) => {
-              const d = pointsToPath(
-                points,
-                m.key,
-                now,
-                rangeMs,
-                bounds.min,
-                bounds.max,
-              );
-              if (!d) return null;
-              return (
-                <Path
-                  key={m.key}
-                  d={d}
-                  stroke={m.color}
-                  strokeWidth={1.5}
-                  fill="none"
+        {/* Chart card wrapped in GestureDetector for pinch/pan/double-tap */}
+        <GestureDetector gesture={composed}>
+          <View style={styles.chartCard} testID="history-chart-card">
+            <Svg
+              width="100%"
+              height={CHART_H}
+              viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+              testID="history-chart-svg"
+            >
+              {yTicks.map((t, i) => (
+                <Line
+                  key={`yg-${i}`}
+                  x1={PAD_L}
+                  x2={PAD_L + PLOT_W}
+                  y1={t.y}
+                  y2={t.y}
+                  stroke={C.surfaceTertiary}
+                  strokeWidth={1}
                 />
-              );
-            })}
-            {/* Data-point markers for the latest sample of each metric */}
-            {METRICS.map((m) => {
-              for (let i = points.length - 1; i >= 0; i--) {
-                const v = points[i][m.key];
-                if (v === null || v === undefined) continue;
-                const span = Math.max(1, bounds.max - bounds.min);
-                const nx = (points[i].ts - (now - rangeMs)) / rangeMs;
-                const ny = (v - bounds.min) / span;
-                const x = PAD_L + nx * PLOT_W;
-                const y = PAD_T + (1 - ny) * PLOT_H;
+              ))}
+              {yTicks.map((t, i) => (
+                <SvgText
+                  key={`yl-${i}`}
+                  x={PAD_L - 6}
+                  y={t.y + 3}
+                  fontSize={9}
+                  fill={C.onSurfaceTertiary}
+                  textAnchor="end"
+                >
+                  {Math.round(t.value)}
+                </SvgText>
+              ))}
+              {xTicks.map((t, i) => (
+                <SvgText
+                  key={`xl-${i}`}
+                  x={t.x}
+                  y={CHART_H - 8}
+                  fontSize={9}
+                  fill={C.onSurfaceTertiary}
+                  textAnchor="middle"
+                >
+                  {formatTick(t.ts, viewSpan)}
+                </SvgText>
+              ))}
+              {METRICS.map((m) => {
+                const d = pointsToPath(
+                  visiblePoints,
+                  m.key,
+                  viewStart,
+                  viewEnd,
+                  bounds.min,
+                  bounds.max,
+                );
+                if (!d) return null;
                 return (
-                  <Circle
+                  <Path
                     key={m.key}
-                    cx={x}
-                    cy={y}
-                    r={2.5}
-                    fill={m.color}
+                    d={d}
+                    stroke={m.color}
+                    strokeWidth={1.5}
+                    fill="none"
                   />
                 );
-              }
-              return null;
-            })}
-          </Svg>
+              })}
+              {METRICS.map((m) => {
+                for (let i = visiblePoints.length - 1; i >= 0; i--) {
+                  const p = visiblePoints[i];
+                  const v = p[m.key];
+                  if (v === null || v === undefined) continue;
+                  const span = Math.max(1, bounds.max - bounds.min);
+                  const nx = (p.ts - viewStart) / viewSpan;
+                  const ny = (v - bounds.min) / span;
+                  const x = PAD_L + nx * PLOT_W;
+                  const y = PAD_T + (1 - ny) * PLOT_H;
+                  return (
+                    <Circle key={m.key} cx={x} cy={y} r={2.5} fill={m.color} />
+                  );
+                }
+                return null;
+              })}
+            </Svg>
 
-          {points.length === 0 ? (
-            <Text style={styles.emptyText} testID="history-empty">
-              No samples yet. The app records one point every 15 minutes while
-              connected — leave it running to build history.
-            </Text>
-          ) : null}
-        </View>
+            {points.length === 0 ? (
+              <Text style={styles.emptyText} testID="history-empty">
+                No samples yet. The app records one point per configured
+                interval while connected — leave it running to build history.
+              </Text>
+            ) : (
+              <View style={styles.chartHintRow}>
+                <Text style={styles.chartHint}>
+                  Pinch to zoom · drag to pan · double-tap to reset
+                </Text>
+                {isZoomed ? (
+                  <Pressable
+                    testID="reset-zoom-button"
+                    onPress={resetZoom}
+                    hitSlop={8}
+                  >
+                    <Text style={styles.resetLink}>Reset</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            )}
+          </View>
+        </GestureDetector>
 
         {/* Range slider */}
         <View style={styles.sliderCard}>
           <View style={styles.sliderHeader}>
             <Text style={styles.sectionLabel}>RESOLUTION</Text>
             <Text style={styles.sliderValueText} testID="history-range-label">
-              {fmtRangeLabel(days)}
+              {days === 1 ? "24 hours" : `${days} days`}
             </Text>
           </View>
           <Slider
@@ -404,12 +555,14 @@ export default function History() {
             value={
               sampleIntervalMs >= 3600000
                 ? `${Math.round(sampleIntervalMs / 3600000)} hr`
-                : `${Math.round(sampleIntervalMs / 60000)} min`
+                : sampleIntervalMs >= 60000
+                ? `${Math.round(sampleIntervalMs / 60000)} min`
+                : `${Math.round(sampleIntervalMs / 1000)} sec`
             }
           />
           <StatRow
             label="Retention"
-            value={`${Math.round(RETENTION_MS / (24 * 3600 * 1000))} days`}
+            value={`${Math.round(RETENTION_MS / DAY_MS)} days`}
           />
           <StatRow
             label="Oldest"
@@ -487,6 +640,25 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 8,
     marginBottom: 12,
+  },
+  chartHintRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 8,
+    paddingTop: 4,
+  },
+  chartHint: {
+    color: C.onSurfaceTertiary,
+    fontSize: 10,
+    letterSpacing: 0.3,
+  },
+  resetLink: {
+    color: C.brand,
+    fontSize: 11,
+    fontWeight: "600",
+    paddingVertical: 2,
+    paddingHorizontal: 6,
   },
   emptyText: {
     color: C.onSurfaceTertiary,

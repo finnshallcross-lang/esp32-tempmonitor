@@ -18,6 +18,7 @@ export const REFRESH_INTERVALS = [
   { label: "10s", ms: 10000 },
 ];
 export const SAMPLE_INTERVALS = [
+  { label: "30 sec", ms: 30 * 1000 },
   { label: "1 min", ms: 60 * 1000 },
   { label: "5 min", ms: 5 * 60 * 1000 },
   { label: "15 min", ms: 15 * 60 * 1000 },
