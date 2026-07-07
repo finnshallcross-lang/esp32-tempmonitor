@@ -101,9 +101,12 @@ export default function Dashboard() {
       setLastUpdated(new Date());
       setStatus("connected");
       setErrorMsg("");
-      // Fire-and-forget: append to local history if a 15-min window has
-      // elapsed since the last recorded sample.
-      recordReadingIfDue(data).catch(() => {});
+      // Fire-and-forget: only append to local history when we are talking to
+      // the real ESP32. Demo mode returns synthetic data from the cloud
+      // backend and must never contaminate the real graph.
+      if (!configRef.current.demo) {
+        recordReadingIfDue(data).catch(() => {});
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Unknown error";
       setStatus("error");

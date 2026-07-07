@@ -40,10 +40,22 @@ function prune(points: HistoryPoint[], now: number): HistoryPoint[] {
 
 // Record a reading if enough time has elapsed since the last sample.
 // Returns the point that was stored, or null if the write was skipped.
+// Callers must only invoke this after a *successful* live fetch from the
+// real ESP32 – demo/mock data must be filtered out at the call site so it
+// never pollutes real history.
 export async function recordReadingIfDue(
   reading: SensorReading,
   now: number = Date.now(),
 ): Promise<HistoryPoint | null> {
+  // Guard: refuse to record an empty reading (all three fields missing).
+  // This happens if the ESP32 responded but no sensor keys matched.
+  if (
+    reading.temperature === null &&
+    reading.humidity === null &&
+    reading.brightness === null
+  ) {
+    return null;
+  }
   const existing = await readAll();
   const last = existing[existing.length - 1];
   if (last && now - last.ts < SAMPLE_INTERVAL_MS) {
