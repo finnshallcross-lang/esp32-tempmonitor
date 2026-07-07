@@ -26,6 +26,7 @@ import {
   resolveFetchUrl,
   setBrightness,
 } from "@/src/lib/sensor";
+import { recordReadingIfDue } from "@/src/lib/history";
 
 const C = {
   surface: "#0A0A0A",
@@ -100,6 +101,9 @@ export default function Dashboard() {
       setLastUpdated(new Date());
       setStatus("connected");
       setErrorMsg("");
+      // Fire-and-forget: append to local history if a 15-min window has
+      // elapsed since the last recorded sample.
+      recordReadingIfDue(data).catch(() => {});
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Unknown error";
       setStatus("error");
@@ -140,6 +144,11 @@ export default function Dashboard() {
   const openSettings = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     router.push("/settings");
+  }, [router]);
+
+  const openHistory = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push("/history");
   }, [router]);
 
   // Debounced write while the user is dragging + a final write on release.
@@ -215,17 +224,30 @@ export default function Dashboard() {
           <Text style={styles.brandTag}>ESP32</Text>
           <Text style={styles.title}>Sensor Dash</Text>
         </View>
-        <Pressable
-          testID="open-settings-button"
-          onPress={openSettings}
-          style={({ pressed }) => [
-            styles.headerIconBtn,
-            pressed && { opacity: 0.7 },
-          ]}
-          hitSlop={12}
-        >
-          <Feather name="settings" size={20} color={C.onSurface} />
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable
+            testID="open-history-button"
+            onPress={openHistory}
+            style={({ pressed }) => [
+              styles.headerIconBtn,
+              pressed && { opacity: 0.7 },
+            ]}
+            hitSlop={12}
+          >
+            <Feather name="activity" size={20} color={C.onSurface} />
+          </Pressable>
+          <Pressable
+            testID="open-settings-button"
+            onPress={openSettings}
+            style={({ pressed }) => [
+              styles.headerIconBtn,
+              pressed && { opacity: 0.7 },
+            ]}
+            hitSlop={12}
+          >
+            <Feather name="settings" size={20} color={C.onSurface} />
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView
@@ -461,6 +483,11 @@ const styles = StyleSheet.create({
     borderColor: C.border,
     alignItems: "center",
     justifyContent: "center",
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   scroll: {
     paddingHorizontal: 16,
