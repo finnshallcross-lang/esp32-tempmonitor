@@ -17,10 +17,13 @@ import Svg, { Circle, Line, Path, Text as SvgText } from "react-native-svg";
 import {
   HistoryPoint,
   RETENTION_MS,
-  SAMPLE_INTERVAL_MS,
   clearHistory,
   getHistory,
 } from "@/src/lib/history";
+import {
+  DEFAULT_SAMPLE_INTERVAL_MS,
+  loadConfig,
+} from "@/src/lib/sensor";
 
 const C = {
   surface: "#0A0A0A",
@@ -124,6 +127,13 @@ export default function History() {
   const [days, setDays] = useState<number>(7);
   const [points, setPoints] = useState<HistoryPoint[]>([]);
   const [now, setNow] = useState<number>(Date.now());
+  const [sampleIntervalMs, setSampleIntervalMs] = useState<number>(
+    DEFAULT_SAMPLE_INTERVAL_MS,
+  );
+
+  useEffect(() => {
+    loadConfig().then((cfg) => setSampleIntervalMs(cfg.sampleIntervalMs));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -391,7 +401,11 @@ export default function History() {
           />
           <StatRow
             label="Sample interval"
-            value={`${Math.round(SAMPLE_INTERVAL_MS / 60000)} min`}
+            value={
+              sampleIntervalMs >= 3600000
+                ? `${Math.round(sampleIntervalMs / 3600000)} hr`
+                : `${Math.round(sampleIntervalMs / 60000)} min`
+            }
           />
           <StatRow
             label="Retention"

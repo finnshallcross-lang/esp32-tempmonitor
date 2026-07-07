@@ -6,14 +6,23 @@ export const CONFIG_KEYS = {
   endpoint: "esp32.endpoint",
   interval: "esp32.interval",
   demo: "esp32.demo",
+  sampleInterval: "esp32.sampleInterval",
 } as const;
 
 export const DEFAULT_ENDPOINT = "http://192.168.68.71/data";
 export const DEFAULT_INTERVAL_MS = 5000;
+export const DEFAULT_SAMPLE_INTERVAL_MS = 15 * 60 * 1000;
 export const REFRESH_INTERVALS = [
   { label: "2s", ms: 2000 },
   { label: "5s", ms: 5000 },
   { label: "10s", ms: 10000 },
+];
+export const SAMPLE_INTERVALS = [
+  { label: "1 min", ms: 60 * 1000 },
+  { label: "5 min", ms: 5 * 60 * 1000 },
+  { label: "15 min", ms: 15 * 60 * 1000 },
+  { label: "30 min", ms: 30 * 60 * 1000 },
+  { label: "1 hr", ms: 60 * 60 * 1000 },
 ];
 
 export type SensorReading = {
@@ -26,18 +35,22 @@ export type SensorConfig = {
   endpoint: string;
   intervalMs: number;
   demo: boolean;
+  sampleIntervalMs: number;
 };
 
 export async function loadConfig(): Promise<SensorConfig> {
-  const [endpoint, interval, demo] = await Promise.all([
+  const [endpoint, interval, demo, sampleInterval] = await Promise.all([
     storage.getItem(CONFIG_KEYS.endpoint, DEFAULT_ENDPOINT),
     storage.getItem(CONFIG_KEYS.interval, DEFAULT_INTERVAL_MS),
     storage.getItem(CONFIG_KEYS.demo, false),
+    storage.getItem(CONFIG_KEYS.sampleInterval, DEFAULT_SAMPLE_INTERVAL_MS),
   ]);
   return {
     endpoint: (endpoint as string) || DEFAULT_ENDPOINT,
     intervalMs: (interval as number) || DEFAULT_INTERVAL_MS,
     demo: Boolean(demo),
+    sampleIntervalMs:
+      (sampleInterval as number) || DEFAULT_SAMPLE_INTERVAL_MS,
   };
 }
 
@@ -46,6 +59,7 @@ export async function saveConfig(cfg: SensorConfig): Promise<void> {
     storage.setItem(CONFIG_KEYS.endpoint, cfg.endpoint),
     storage.setItem(CONFIG_KEYS.interval, cfg.intervalMs),
     storage.setItem(CONFIG_KEYS.demo, cfg.demo),
+    storage.setItem(CONFIG_KEYS.sampleInterval, cfg.sampleIntervalMs),
   ]);
 }
 

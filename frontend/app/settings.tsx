@@ -18,7 +18,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   DEFAULT_ENDPOINT,
   DEFAULT_INTERVAL_MS,
+  DEFAULT_SAMPLE_INTERVAL_MS,
   REFRESH_INTERVALS,
+  SAMPLE_INTERVALS,
   loadConfig,
   saveConfig,
 } from "@/src/lib/sensor";
@@ -49,6 +51,9 @@ export default function Settings() {
 
   const [endpoint, setEndpoint] = useState(DEFAULT_ENDPOINT);
   const [intervalMs, setIntervalMs] = useState<number>(DEFAULT_INTERVAL_MS);
+  const [sampleIntervalMs, setSampleIntervalMs] = useState<number>(
+    DEFAULT_SAMPLE_INTERVAL_MS,
+  );
   const [demo, setDemo] = useState(false);
   const [urlError, setUrlError] = useState<string>("");
   const [savedFlash, setSavedFlash] = useState(false);
@@ -57,6 +62,7 @@ export default function Settings() {
     loadConfig().then((cfg) => {
       setEndpoint(cfg.endpoint);
       setIntervalMs(cfg.intervalMs);
+      setSampleIntervalMs(cfg.sampleIntervalMs);
       setDemo(cfg.demo);
     });
   }, []);
@@ -68,7 +74,12 @@ export default function Settings() {
       return;
     }
     setUrlError("");
-    await saveConfig({ endpoint: endpoint.trim(), intervalMs, demo });
+    await saveConfig({
+      endpoint: endpoint.trim(),
+      intervalMs,
+      demo,
+      sampleIntervalMs,
+    });
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setSavedFlash(true);
     setTimeout(() => {
@@ -80,6 +91,11 @@ export default function Settings() {
   const onSelectInterval = (ms: number) => {
     Haptics.selectionAsync();
     setIntervalMs(ms);
+  };
+
+  const onSelectSampleInterval = (ms: number) => {
+    Haptics.selectionAsync();
+    setSampleIntervalMs(ms);
   };
 
   return (
@@ -170,6 +186,41 @@ export default function Settings() {
               );
             })}
           </View>
+
+          {/* History sample interval */}
+          <Text style={[styles.sectionLabel, { marginTop: 24 }]}>
+            HISTORY SAMPLE INTERVAL
+          </Text>
+          <View style={styles.segment} testID="sample-interval-segmented">
+            {SAMPLE_INTERVALS.map((opt) => {
+              const active = opt.ms === sampleIntervalMs;
+              return (
+                <Pressable
+                  key={opt.ms}
+                  testID={`sample-interval-option-${opt.label.replace(" ", "")}`}
+                  onPress={() => onSelectSampleInterval(opt.ms)}
+                  style={[
+                    styles.segmentItem,
+                    active && styles.segmentItemActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.segmentText,
+                      active && styles.segmentTextActive,
+                    ]}
+                  >
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <Text style={styles.helpText}>
+            How often a point is added to the 30-day history graph. Shorter =
+            more detail, more storage. Existing history is not deleted when
+            this changes.
+          </Text>
 
           {/* Demo toggle */}
           <View style={[styles.row, { marginTop: 24 }]}>

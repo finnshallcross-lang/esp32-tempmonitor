@@ -1,12 +1,12 @@
 // Local history storage for ESP32 sensor readings.
-// One sample every 15 minutes, rolling 30-day retention.
+// Interval is configurable (see Settings), retention is fixed at 30 days.
 
 import { storage } from "@/src/utils/storage";
 
 import type { SensorReading } from "./sensor";
+import { DEFAULT_SAMPLE_INTERVAL_MS } from "./sensor";
 
 const KEY = "esp32.history.v1";
-export const SAMPLE_INTERVAL_MS = 15 * 60 * 1000;   // 15 min
 export const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;  // 30 days
 
 export type HistoryPoint = {
@@ -45,6 +45,7 @@ function prune(points: HistoryPoint[], now: number): HistoryPoint[] {
 // never pollutes real history.
 export async function recordReadingIfDue(
   reading: SensorReading,
+  sampleIntervalMs: number = DEFAULT_SAMPLE_INTERVAL_MS,
   now: number = Date.now(),
 ): Promise<HistoryPoint | null> {
   // Guard: refuse to record an empty reading (all three fields missing).
@@ -58,7 +59,7 @@ export async function recordReadingIfDue(
   }
   const existing = await readAll();
   const last = existing[existing.length - 1];
-  if (last && now - last.ts < SAMPLE_INTERVAL_MS) {
+  if (last && now - last.ts < sampleIntervalMs) {
     return null;
   }
   const point: HistoryPoint = {

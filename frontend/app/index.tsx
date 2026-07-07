@@ -105,7 +105,10 @@ export default function Dashboard() {
       // the real ESP32. Demo mode returns synthetic data from the cloud
       // backend and must never contaminate the real graph.
       if (!configRef.current.demo) {
-        recordReadingIfDue(data).catch(() => {});
+        recordReadingIfDue(
+          data,
+          configRef.current.sampleIntervalMs,
+        ).catch(() => {});
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Unknown error";
